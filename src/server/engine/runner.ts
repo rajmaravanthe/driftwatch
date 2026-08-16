@@ -146,7 +146,7 @@ export class WorkflowRunner {
       byName: new Map(),
       missingNames: [],
     };
-    let fallbackUsed = false;
+    const flags = { fallbackUsed: false };
 
     for (const stepName of STEP_ORDER) {
       this.refreshStep(run, stepName, {
@@ -169,7 +169,7 @@ export class WorkflowRunner {
         } else if (stepName === "inventory") {
           await this.runInventoryStep(run, stepName, liveState);
         } else if (stepName === "fetch-live-state") {
-          await this.runFetchStep(run, stepName, manifest, liveState);
+          await this.runFetchStep(run, stepName, manifest, liveState, flags);
         } else if (stepName === "reconcile") {
           await this.runReconcileStep(run, stepName, manifest, liveState);
         } else if (stepName === "compare") {
@@ -208,6 +208,7 @@ export class WorkflowRunner {
       }
     }
 
+    const fallbackUsed = flags.fallbackUsed;
     this.setStatus(run, "succeeded");
     run.fallbackUsed = fallbackUsed;
     run.finishedAt = new Date().toISOString();
@@ -249,7 +250,7 @@ export class WorkflowRunner {
     this.finishStep(
       run,
       stepName,
-      `found ${live.length} live resource(s) on ${this.providerPlatformLabel(run, stepName)}`,
+      `found ${live.length} live resource(s) on ${this.provider.platformLabel}`,
     );
   }
 
@@ -262,43 +263,63 @@ export class WorkflowRunner {
     stepName: StepName,
     manifest: Manifest,
     liveState: MaterializedLiveState,
+    flags: { fallbackUsed: boolean },
   ): Promise<void> {
     let fetchedCount = 0;
-    let reusedCount = 0;
+    let fallbackCount = 0;
+    let missingCount = 0;
+
     for (const spec of manifest.resources) {
-      const hasInventoryEntry = liveState.byName.has(spec.name);
-      if (hasInventoryEntry) {
-        try {
-          const live = await this.withProviderRetry(
-            run,
-            stepName,
-            `fetch ${spec.name}`,
-            () => this.provider.fetchResource(spec.name),
-          );
-          liveState.byName.set(spec.name, live);
-          fetchedCount += 1;
+      try {
+        const live = await this.withProviderRetry(
+          run,
+          stepName,
+          `fetch ${spec.name}`,
+          () => this.provider.fetchResource(spec.name),
+        );
+        liveState.byName.set(spec.name, live);
+        fetchedCount += 1;
+      } catch (err) {
+        if (err instanceof Error && err.message.includes("does not exist")) {
+          liveState.byName.delete(spec.name);
+          liveState.missingNames.push(spec.name);
+          missingCount += 1;
+          this.log({
+            runId: run.id,
+            level: "warn",
+            step: stepName,
+            message: `expected resource ${spec.name} is absent from the platform`,
+          });
           continue;
-        } catch (err) {
-          if (err instanceof Error && err.message.includes("does not exist")) {
-            liveState.byName.delete(spec.name);
-            liveState.missingNames.push(spec.name);
-            this.log({
-              runId: run.id,
-              level: "warn",
-              step: stepName,
-              message: `expected resource ${spec.name} is absent from the platform`,
-            });
-            continue;
-          }
-          throw err;
         }
+        // Retries exhausted on a transient failure — degrade gracefully to the
+        // inventory snapshot instead of aborting the whole run.
+        if (liveState.byName.has(spec.name)) {
+          flags.fallbackUsed = true;
+          fallbackCount += 1;
+          this.log({
+            runId: run.id,
+            level: "warn",
+            step: stepName,
+            message: `fetch of ${spec.name} failed after retries — using inventory snapshot for this resource`,
+          });
+          continue;
+        }
+        this.log({
+          runId: run.id,
+          level: "error",
+          step: stepName,
+          message: `no state available for ${spec.name} after retries — it will be reported as drifted`,
+        });
+        liveState.missingNames.push(spec.name);
+        missingCount += 1;
       }
-      reusedCount += 1;
     }
+
     this.finishStep(
       run,
       stepName,
-      `fetched live state for ${fetchedCount} resource(s) via API; ${reusedCount} from inventory snapshot; ${liveState.missingNames.length} expected resource(s) missing`,
+      `fetched live state for ${fetchedCount} resource(s) via API; ${fallbackCount} via inventory fallback; ${missingCount} unavailable/missing`,
     );
   }
 
@@ -367,9 +388,5 @@ export class WorkflowRunner {
       stepName,
       `${report.summary.cleanCount} clean · ${report.summary.driftedCount} drifted · ${report.summary.criticalCount} critical`,
     );
-  }
-
-  private providerPlatformLabel(run: Run, stepName: StepName): string {
-    return "acme-cloud · region west-1";
   }
 }

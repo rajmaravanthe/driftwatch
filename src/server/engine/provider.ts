@@ -62,6 +62,10 @@ export class MockInfraProvider {
     this.world = this.load();
   }
 
+  get platformLabel(): string {
+    return this.world.platformLabel;
+  }
+
   private load(): ProviderWorld {
     try {
       const raw = fs.readFileSync(worldPath(), "utf8");
