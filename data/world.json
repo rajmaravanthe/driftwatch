@@ -1,0 +1,22 @@
+{
+  "platformLabel": "acme-cloud · region west-1",
+  "resources": [
+    {
+      "name": "orders-db",
+      "kind": "database",
+      "config": {
+        "tls": true,
+        "version": "15.1",
+        "replicas": 2,
+        "storage": 100,
+        "maxConnections": 400
+      }
+    }
+  ],
+  "transientFailures": {},
+  "stats": {
+    "requests": 6,
+    "failures": 0,
+    "applied": 1
+  }
+}

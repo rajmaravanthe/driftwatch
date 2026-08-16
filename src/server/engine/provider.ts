@@ -8,7 +8,12 @@ import type { ResourceKind, ResourceSpec } from "../../shared/types.js";
  * Represents the "real" platform (e.g. AWS/VMware state) that DriftWatch
  * inspects. Backed by a JSON file (`data/world.json`) so live state persists
  * across runs — out-of-band changes made by "other operators" stick, and
- * reconcile actually mutates the world. No cloud account required.
+ * reconcile actually mutates the world on disk.
+ *
+ * The world file is re-read on every call (see `read()`/`write()`), so edits
+ * made outside this provider — e.g. `npm run seed` running after the server
+ * has started — are observed immediately. The file is a few KB; this is a
+ * deliberate, documented trade-off for a local mock.
  */
 
 export interface LiveResource {
@@ -24,7 +29,8 @@ export interface ProviderWorld {
   /**
    * Transient connectivity failures, keyed by resource name -> failure rate
    * (0..1). Used to exercise the retry path deterministically. e.g.
-   * `{ "payments-db": 1 }` fails the first fetch of that resource, then works.
+   * `{ "payments-api": 1 }` fails the first fetch of that resource, then
+   * succeeds on the retry (probability-based per call).
    */
   transientFailures: Record<string, number>;
   stats: {
@@ -56,34 +62,37 @@ export class ProviderConnectError extends Error {
 }
 
 export class MockInfraProvider {
-  private world: ProviderWorld;
-
-  constructor() {
-    this.world = this.load();
-  }
-
   get platformLabel(): string {
-    return this.world.platformLabel;
+    return this.read().platformLabel;
   }
 
-  private load(): ProviderWorld {
+  /** Load the world from disk, falling back to defaults when absent. */
+  private read(): ProviderWorld {
     try {
       const raw = fs.readFileSync(worldPath(), "utf8");
-      return { ...DEFAULT_WORLD, ...(JSON.parse(raw) as ProviderWorld) };
+      const parsed = JSON.parse(raw) as Partial<ProviderWorld>;
+      return {
+        ...structuredClone(DEFAULT_WORLD),
+        ...parsed,
+        stats: { ...DEFAULT_WORLD.stats, ...(parsed.stats ?? {}) },
+      };
     } catch {
       return structuredClone(DEFAULT_WORLD);
     }
   }
 
-  private persist(): void {
+  /** Persist the world back to disk atomically enough for a local mock. */
+  private write(world: ProviderWorld): void {
     fs.mkdirSync(path.dirname(worldPath()), { recursive: true });
-    fs.writeFileSync(worldPath(), JSON.stringify(this.world, null, 2));
+    fs.writeFileSync(worldPath(), JSON.stringify(world, null, 2));
   }
 
-  private recordRequest(failed: boolean): void {
-    this.world.stats.requests += 1;
-    if (failed) this.world.stats.failures += 1;
-    this.persist();
+  /** Read-modify-write helper that keeps stats changes in the same write. */
+  private mutate<T>(fn: (world: ProviderWorld) => T): T {
+    const world = this.read();
+    const result = fn(world);
+    this.write(world);
+    return result;
   }
 
   private simulateLatency(): Promise<void> {
@@ -94,29 +103,34 @@ export class MockInfraProvider {
     });
   }
 
+  /** Record a request in stats. Failing requests also count as failures. */
+  private recordResult(failed: boolean): void {
+    this.mutate((world) => {
+      world.stats.requests += 1;
+      if (failed) world.stats.failures += 1;
+    });
+  }
+
   /** Probe the target platform; throws when the platform is unreachable. */
   async ping(): Promise<{ platformLabel: string; latencyMs: number }> {
     const t0 = Date.now();
     await this.simulateLatency();
-    // Once per N calls the platform itself drops — here 2% to keep it rare.
+    // 2% chance the platform itself drops — kept rare so normal runs succeed.
     if (Math.random() < 0.02) {
-      this.recordRequest(true);
+      this.recordResult(true);
       throw new ProviderConnectError(
         "acme-cloud control plane unreachable (simulated timeout)",
       );
     }
-    this.recordRequest(false);
-    return {
-      platformLabel: this.world.platformLabel,
-      latencyMs: Date.now() - t0,
-    };
+    this.recordResult(false);
+    return { platformLabel: this.platformLabel, latencyMs: Date.now() - t0 };
   }
 
   /** List every live resource the platform currently knows about. */
   async inventory(): Promise<LiveResource[]> {
     await this.simulateLatency();
-    this.recordRequest(false);
-    return this.world.resources.map((r) => structuredClone(r));
+    this.recordResult(false);
+    return this.read().resources.map((r) => structuredClone(r));
   }
 
   /**
@@ -126,15 +140,15 @@ export class MockInfraProvider {
    */
   async fetchResource(name: string): Promise<LiveResource> {
     await this.simulateLatency();
-    const failureRate = this.world.transientFailures[name] ?? 0;
+    const failureRate = this.read().transientFailures[name] ?? 0;
     if (failureRate > 0 && Math.random() < failureRate) {
-      this.recordRequest(true);
+      this.recordResult(true);
       throw new ProviderConnectError(
         `api error reading ${name}: connection reset by peer (simulated)`,
       );
     }
-    this.recordRequest(false);
-    const live = this.world.resources.find((r) => r.name === name);
+    this.recordResult(false);
+    const live = this.read().resources.find((r) => r.name === name);
     if (!live) {
       throw new Error(`resource ${name} does not exist on the platform`);
     }
@@ -144,22 +158,23 @@ export class MockInfraProvider {
   /** Apply expected state to the live world (used by reconcile). */
   async apply(spec: ResourceSpec): Promise<LiveResource> {
     await this.simulateLatency();
-    this.recordRequest(false);
-    this.world.stats.applied += 1;
-    const existing = this.world.resources.find((r) => r.name === spec.name);
-    if (existing) {
-      existing.kind = spec.kind;
-      existing.config = structuredClone(spec.config);
-    } else {
-      this.world.resources.push({
-        name: spec.name,
-        kind: spec.kind,
-        config: structuredClone(spec.config),
-      });
-    }
-    const applied = this.world.resources.find((r) => r.name === spec.name);
-    if (!applied) throw new Error(`apply failed for ${spec.name}`);
-    this.persist();
-    return structuredClone(applied);
+    return this.mutate((world) => {
+      world.stats.requests += 1;
+      world.stats.applied += 1;
+      const existing = world.resources.find((r) => r.name === spec.name);
+      if (existing) {
+        existing.kind = spec.kind;
+        existing.config = structuredClone(spec.config);
+      } else {
+        world.resources.push({
+          name: spec.name,
+          kind: spec.kind,
+          config: structuredClone(spec.config),
+        });
+      }
+      const applied = world.resources.find((r) => r.name === spec.name);
+      if (!applied) throw new Error(`apply failed for ${spec.name}`);
+      return structuredClone(applied);
+    });
   }
 }
