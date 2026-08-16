@@ -8,11 +8,11 @@
 
 export type ResourceKind = "server" | "database" | "loadBalancer";
 
-export const RESOURCE_KINDS: readonly ResourceKind[] = [
+export const RESOURCE_KINDS = [
   "server",
   "database",
   "loadBalancer",
-] as const;
+] as const satisfies readonly ResourceKind[];
 
 /**
  * What the platform should do when drift is detected on this resource.
