@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type {
   DriftReport,
   Run,
@@ -170,7 +170,15 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   );
 }
 
-export function DriftReportView({ report }: { report: DriftReport }) {
+/**
+ * Memoized so SSE-driven parent re-renders (status/step/log events) don't
+ * re-diff the report table when the report object itself hasn't changed.
+ */
+export const DriftReportView = memo(function DriftReportView({
+  report,
+}: {
+  report: DriftReport;
+}) {
   const { summary } = report;
   return (
     <div>
@@ -263,4 +271,4 @@ export function DriftReportView({ report }: { report: DriftReport }) {
       })}
     </div>
   );
-}
+});

@@ -1,8 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import type { ManifestListItem, Run } from "../../shared/types.js";
 import { api } from "../lib/api.js";
 import { formatTime, StatusPill } from "./Bits.js";
-import { RunDetail } from "./RunDetail.js";
+
+/**
+ * Code-split the live workflow view: the RunDetail chunk (SSE handling,
+ * log stream, drift report table) is only downloaded when the operator
+ * actually opens a run. Keeps the manifest browsing experience lean.
+ */
+const LazyRunDetail = lazy(() =>
+  import("./RunDetail.js").then((m) => ({ default: m.RunDetail })),
+);
 
 interface Props {
   manifestId: string;
@@ -54,13 +62,17 @@ export function ManifestDetail({ manifestId, onBack }: Props) {
 
   if (activeRunId) {
     return (
-      <RunDetail
-        runId={activeRunId}
-        onBack={() => {
-          setActiveRunId(null);
-          loadRuns();
-        }}
-      />
+      <Suspense
+        fallback={<div className='loading'>Loading live workflow view…</div>}
+      >
+        <LazyRunDetail
+          runId={activeRunId}
+          onBack={() => {
+            setActiveRunId(null);
+            loadRuns();
+          }}
+        />
+      </Suspense>
     );
   }
 
