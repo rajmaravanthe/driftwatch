@@ -15,7 +15,8 @@ app.use(express.json());
 app.use("/api", createApiRouter(provider));
 
 // In production (`npm run build && npm start`) serve the built SPA too.
-const webDist = path.resolve(__dirname, "../../web");
+// Server compiles to dist/server/, so ../web = dist/web/.
+const webDist = path.resolve(__dirname, "../web");
 if (fs.existsSync(webDist)) {
   app.use(express.static(webDist));
   app.get(/^\/(?!api\/).*/, (_req, res) => {
