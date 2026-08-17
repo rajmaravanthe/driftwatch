@@ -92,7 +92,7 @@ export interface Run {
 
 // ---------- Drift & reporting ----------
 
-export type DriftKind = "field-changed" | "missing" | "unexpected";
+export type DriftKind = "clean" | "field-changed" | "missing" | "unexpected";
 
 export type DriftSeverity = "low" | "medium" | "high" | "critical";
 

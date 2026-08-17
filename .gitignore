@@ -2,5 +2,6 @@ node_modules/
 dist/
 data/*.db
 data/*.db-*
+data/world.json
 *.log
 .DS_Store

@@ -142,6 +142,11 @@ export class MockInfraProvider {
     await this.simulateLatency();
     const failureRate = this.read().transientFailures[name] ?? 0;
     if (failureRate > 0 && Math.random() < failureRate) {
+      // Model the transient as one-off: after this failure the connection
+      // recovers, so the next retry attempt succeeds deterministically.
+      this.mutate((world) => {
+        world.transientFailures[name] = 0;
+      });
       this.recordResult(true);
       throw new ProviderConnectError(
         `api error reading ${name}: connection reset by peer (simulated)`,

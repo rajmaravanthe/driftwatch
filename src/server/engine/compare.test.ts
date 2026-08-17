@@ -21,7 +21,7 @@ test("clean resource: no fields differ", () => {
   const result = compareResource(serverSpec, matchingLive);
   assert.equal(result.status, "clean");
   assert.equal(result.fields.length, 0);
-  assert.equal(result.driftKind, "missing");
+  assert.equal(result.driftKind, "clean");
 });
 
 test("field-changed: detects changed scalar and severity", () => {

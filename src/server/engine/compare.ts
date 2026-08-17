@@ -80,7 +80,7 @@ export function compareResource(
     resourceName: expected.name,
     kind: expected.kind,
     strategy: expected.strategy,
-    driftKind: diffs.size > 0 ? "field-changed" : "missing",
+    driftKind: diffs.size > 0 ? "field-changed" : "clean",
     status: diffs.size > 0 ? "drifted" : "clean",
     fields: [...diffs.entries()].map(([path, diff]) => ({
       path,
