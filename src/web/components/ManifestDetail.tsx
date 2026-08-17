@@ -38,13 +38,23 @@ export function ManifestDetail({ manifestId, onBack }: Props) {
       const found = all.find((m) => m.id === manifestId) ?? null;
       setManifest(found);
     });
+    // The SSE live view already streams every run transition, so polling
+    // while a run is open is pure waste. Also skip ticks on hidden tabs.
+    if (activeRunId) {
+      return () => {
+        active = false;
+      };
+    }
     loadRuns();
-    const timer = setInterval(loadRuns, 2500);
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      loadRuns();
+    }, 2500);
     return () => {
       active = false;
       clearInterval(timer);
     };
-  }, [manifestId, loadRuns]);
+  }, [manifestId, loadRuns, activeRunId]);
 
   async function startRun() {
     setStarting(true);
